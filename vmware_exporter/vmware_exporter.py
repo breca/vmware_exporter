@@ -177,6 +177,10 @@ class VmwareCollector():
                 'vmware_vm_snapshot_timestamp_seconds',
                 'VMWare Snapshot creation time in seconds',
                 labels=self._labelNames['snapshots'] + ['vm_snapshot_name']),
+            'vmware_vm_snapshot_delta_size_bytes': GaugeMetricFamily(
+                'vmware_vm_snapshot_delta_size_bytes',
+                'VMWare Snapshot delta disk size in bytes',
+                labels=self._labelNames['snapshots'] + ['vm_snapshot_name']),
         }
         metric_list['datastores'] = {
             'vmware_datastore_capacity_size': GaugeMetricFamily(
@@ -760,6 +764,7 @@ class VmwareCollector():
 
         if self.collect_only['snapshots'] is True:
             properties.append('snapshot')
+            properties.append('layoutEx')
 
         """
         papa smurf, are we collecting custom attributes?
@@ -1162,11 +1167,47 @@ class VmwareCollector():
         snapshot_data = []
         for snapshot in snapshots:
             snap_timestamp = self._to_epoch(snapshot.createTime)
-            snap_info = {'name': snapshot.name, 'timestamp_seconds': snap_timestamp}
+            snap_info = {
+                'name': snapshot.name,
+                'timestamp_seconds': snap_timestamp,
+                'ref': snapshot.snapshot,
+            }
             snapshot_data.append(snap_info)
             snapshot_data = snapshot_data + self._vmware_full_snapshots_list(
                 snapshot.childSnapshotList)
         return snapshot_data
+
+    def _vmware_snapshot_delta_sizes(self, layout_ex):
+        """
+        Compute per-snapshot delta disk size in bytes from layoutEx.
+        Returns a dict mapping snapshot ManagedObjectReference to size in bytes.
+        """
+        sizes = {}
+        if not layout_ex or not hasattr(layout_ex, 'snapshot') or not layout_ex.snapshot:
+            return sizes
+
+        # Build a lookup from file key to file size
+        file_sizes = {}
+        if hasattr(layout_ex, 'file') and layout_ex.file:
+            for f in layout_ex.file:
+                file_sizes[f.key] = f.size
+
+        for snap_layout in layout_ex.snapshot:
+            size = 0
+            # Add snapshot data file size
+            if hasattr(snap_layout, 'dataKey') and snap_layout.dataKey >= 0:
+                size += file_sizes.get(snap_layout.dataKey, 0)
+            # Add snapshot disk delta sizes
+            if hasattr(snap_layout, 'disk') and snap_layout.disk:
+                for disk in snap_layout.disk:
+                    if hasattr(disk, 'chain') and disk.chain:
+                        for unit in disk.chain:
+                            if hasattr(unit, 'fileKey') and unit.fileKey:
+                                for fk in unit.fileKey:
+                                    size += file_sizes.get(fk, 0)
+            sizes[snap_layout.key] = size
+
+        return sizes
 
     @defer.inlineCallbacks
     def updateMetricsLabelNames(self, metrics, metric_types):
@@ -1616,10 +1657,19 @@ class VmwareCollector():
                     len(snapshots),
                 )
 
+                delta_sizes = {}
+                if 'layoutEx' in row:
+                    delta_sizes = self._vmware_snapshot_delta_sizes(row['layoutEx'])
+
                 for snapshot in snapshots:
                     metrics['vmware_vm_snapshot_timestamp_seconds'].add_metric(
                         labels + [snapshot['name']],
                         snapshot['timestamp_seconds'],
+                    )
+                    snap_size = delta_sizes.get(snapshot['ref'], 0)
+                    metrics['vmware_vm_snapshot_delta_size_bytes'].add_metric(
+                        labels + [snapshot['name']],
+                        snap_size,
                     )
 
         logging.info("Finished vm metrics collection")

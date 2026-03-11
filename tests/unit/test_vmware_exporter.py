@@ -38,18 +38,71 @@ def _succeed(result):
 def test_collect_vms():
     boot_time = EPOCH + datetime.timedelta(seconds=60)
 
+    snap_ref_1 = vim.ManagedObject('snapshot-1')
     snapshot_1 = mock.Mock()
     snapshot_1.createTime = EPOCH + datetime.timedelta(seconds=60)
     snapshot_1.name = 'snapshot_1'
     snapshot_1.childSnapshotList = []
+    snapshot_1.snapshot = snap_ref_1
 
+    snap_ref_2 = vim.ManagedObject('snapshot-2')
     snapshot_2 = mock.Mock()
     snapshot_2.createTime = EPOCH + datetime.timedelta(seconds=120)
     snapshot_2.name = 'snapshot_2'
     snapshot_2.childSnapshotList = [snapshot_1]
+    snapshot_2.snapshot = snap_ref_2
 
     snapshot = mock.Mock()
     snapshot.rootSnapshotList = [snapshot_2]
+
+    # layoutEx mock for snapshot delta sizes
+    layout_file_1 = mock.Mock()
+    layout_file_1.key = 10
+    layout_file_1.size = 1048576  # 1 MB snapshot data
+    layout_file_1.type = 'snapshotData'
+    layout_file_1.name = '[datastore-1] vm-1/vm-1-000001.vmsn'
+
+    layout_file_2 = mock.Mock()
+    layout_file_2.key = 11
+    layout_file_2.size = 5242880  # 5 MB delta disk
+    layout_file_2.type = 'diskExtent'
+    layout_file_2.name = '[datastore-1] vm-1/vm-1-000001-delta.vmdk'
+
+    layout_file_3 = mock.Mock()
+    layout_file_3.key = 20
+    layout_file_3.size = 2097152  # 2 MB snapshot data
+    layout_file_3.type = 'snapshotData'
+    layout_file_3.name = '[datastore-1] vm-1/vm-1-000002.vmsn'
+
+    layout_file_4 = mock.Mock()
+    layout_file_4.key = 21
+    layout_file_4.size = 10485760  # 10 MB delta disk
+    layout_file_4.type = 'diskExtent'
+    layout_file_4.name = '[datastore-1] vm-1/vm-1-000002-delta.vmdk'
+
+    disk_unit_1 = mock.Mock()
+    disk_unit_1.fileKey = [11]
+    disk_layout_1 = mock.Mock()
+    disk_layout_1.chain = [disk_unit_1]
+
+    disk_unit_2 = mock.Mock()
+    disk_unit_2.fileKey = [21]
+    disk_layout_2 = mock.Mock()
+    disk_layout_2.chain = [disk_unit_2]
+
+    snap_layout_1 = mock.Mock()
+    snap_layout_1.key = snap_ref_1
+    snap_layout_1.dataKey = 10
+    snap_layout_1.disk = [disk_layout_1]
+
+    snap_layout_2 = mock.Mock()
+    snap_layout_2.key = snap_ref_2
+    snap_layout_2.dataKey = 20
+    snap_layout_2.disk = [disk_layout_2]
+
+    layout_ex = mock.Mock()
+    layout_ex.file = [layout_file_1, layout_file_2, layout_file_3, layout_file_4]
+    layout_ex.snapshot = [snap_layout_1, snap_layout_2]
 
     disk = mock.Mock()
     disk.diskPath = '/boot'
@@ -93,6 +146,7 @@ def test_collect_vms():
                 'summary.config.vmPathName': '[datastore-1] vm-1/vm-1.vmx',
                 'runtime.bootTime': boot_time,
                 'snapshot': snapshot,
+                'layoutEx': layout_ex,
                 'guest.disk': [disk],
                 'guest.toolsStatus': 'toolsOk',
                 'guest.toolsVersion': '10336',
@@ -133,6 +187,7 @@ def test_collect_vms():
                 'summary.config.vmPathName': '[datastore-1] vm-1/vm-1.vmx',
                 'runtime.bootTime': boot_time,
                 'snapshot': snapshot,
+                'layoutEx': layout_ex,
                 'guest.disk': [disk],
                 'guest.toolsStatus': 'toolsOk',
                 'guest.toolsVersion': '10336',
@@ -180,6 +235,7 @@ def test_collect_vms():
                 'summary.config.vmPathName': '[datastore-1] vm-1/vm-1.vmx',
                 'runtime.bootTime': boot_time,
                 'snapshot': snapshot,
+                'layoutEx': layout_ex,
                 'guest.disk': [disk],
                 'guest.toolsStatus': 'toolsOk',
                 'guest.toolsVersion': '10336',
@@ -195,6 +251,7 @@ def test_collect_vms():
                 'summary.config.vmPathName': '[datastore-1] vm-2/vm-2.vmx',
                 'runtime.bootTime': boot_time,
                 'snapshot': snapshot,
+                'layoutEx': layout_ex,
                 'guest.disk': [disk],
                 'guest.toolsStatus': 'toolsOk',
                 'guest.toolsVersion': '10336',
@@ -211,6 +268,7 @@ def test_collect_vms():
                 'summary.config.vmPathName': '[datastore-1] vm-3/vm-3.vmx',
                 'runtime.bootTime': boot_time,
                 'snapshot': snapshot,
+                'layoutEx': layout_ex,
                 'guest.disk': [disk],
                 'guest.toolsStatus': 'toolsOk',
                 'guest.toolsVersion': '10336',
@@ -324,6 +382,27 @@ def test_collect_vms():
         'vm_snapshot_name': 'snapshot_1',
     }
     assert metrics['vmware_vm_snapshot_timestamp_seconds'].samples[1][2] == 60
+
+    # Snapshot delta sizes
+    assert metrics['vmware_vm_snapshot_delta_size_bytes'].samples[0][1] == {
+        'vm_name': 'vm-1',
+        'ds_name': 'datastore-1',
+        'host_name': 'host-1',
+        'cluster_name': 'cluster-1',
+        'dc_name': 'dc',
+        'vm_snapshot_name': 'snapshot_2',
+    }
+    assert metrics['vmware_vm_snapshot_delta_size_bytes'].samples[0][2] == 12582912  # 2MB + 10MB
+
+    assert metrics['vmware_vm_snapshot_delta_size_bytes'].samples[1][1] == {
+        'vm_name': 'vm-1',
+        'ds_name': 'datastore-1',
+        'host_name': 'host-1',
+        'cluster_name': 'cluster-1',
+        'dc_name': 'dc',
+        'vm_snapshot_name': 'snapshot_1',
+    }
+    assert metrics['vmware_vm_snapshot_delta_size_bytes'].samples[1][2] == 6291456  # 1MB + 5MB
 
     # Max Memory
     assert metrics['vmware_vm_memory_max'].samples[0][1] == {
@@ -1231,7 +1310,7 @@ def test_collect():
         metrics = yield collector.collect()
 
     assert metrics[0].name == 'vmware_vm_power_state'
-    assert metrics[-1].name == 'vmware_vm_snapshot_timestamp_seconds'
+    assert metrics[-1].name == 'vmware_vm_snapshot_delta_size_bytes'
 
 
 @pytest_twisted.inlineCallbacks

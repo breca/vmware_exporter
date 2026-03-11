@@ -94,3 +94,4 @@ config*.yml
 
 # Visual Studio Code
 .vscode
+.codemap/
